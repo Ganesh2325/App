@@ -36,6 +36,7 @@ import {isMobileSafari} from '@libs/Browser';
 import {canUseTouchScreen} from '@libs/DeviceCapabilities';
 import {getEarliestErrorField, getLatestErrorField} from '@libs/ErrorUtils';
 import getPathWithoutDynamicSuffix from '@libs/Navigation/helpers/dynamicRoutesUtils/getPathWithoutDynamicSuffix';
+import stripDynamicRouteSuffixFromPath from '@libs/Navigation/helpers/dynamicRoutesUtils/stripDynamicRouteSuffixFromPath';
 import Navigation from '@libs/Navigation/Navigation';
 import type {PlatformStackScreenProps} from '@libs/Navigation/PlatformStackNavigation/types';
 import TransitionTracker from '@libs/Navigation/TransitionTracker';
@@ -48,6 +49,7 @@ import {close} from '@userActions/Modal';
 import CONST from '@src/CONST';
 import ONYXKEYS from '@src/ONYXKEYS';
 import ROUTES, {DYNAMIC_ROUTES} from '@src/ROUTES';
+import type {Route} from '@src/ROUTES';
 import type SCREENS from '@src/SCREENS';
 import type {Login} from '@src/types/onyx';
 import {isEmptyObject} from '@src/types/utils/EmptyObject';
@@ -59,6 +61,34 @@ import {Str} from 'expensify-common';
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 
 type DynamicContactMethodDetailsPageProps = PlatformStackScreenProps<SettingsNavigatorParamList, typeof SCREENS.SETTINGS.PROFILE.DYNAMIC_CONTACT_METHOD_DETAILS>;
+
+/**
+ * Contact methods list route when `path` is this details screen.
+ * Undefined for any other route, including a modal that was just closed over this screen.
+ */
+function getContactMethodsListRoute(path: string | undefined): Route | undefined {
+    if (!path) {
+        return undefined;
+    }
+
+    const listRoute = stripDynamicRouteSuffixFromPath(path, DYNAMIC_ROUTES.CONTACT_METHOD_DETAILS.path);
+    const pathWithoutLeadingSlash = path.replaceAll(/^\/+/g, '');
+    if (!listRoute || listRoute === pathWithoutLeadingSlash) {
+        return undefined;
+    }
+
+    return listRoute;
+}
+
+function goBackToContactMethodsList(): boolean {
+    const listRoute = getContactMethodsListRoute(Navigation.getActiveRoute());
+    if (!listRoute) {
+        return false;
+    }
+
+    Navigation.goBack(listRoute);
+    return true;
+}
 
 function DynamicContactMethodDetailsPage({route}: DynamicContactMethodDetailsPageProps) {
     const [loginList, loginListResult] = useOnyx(ONYXKEYS.LOGINS, {selector: expensifyLoginsSelector});
@@ -133,32 +163,36 @@ function DynamicContactMethodDetailsPage({route}: DynamicContactMethodDetailsPag
     const prevValidatedDate = usePrevious(loginData?.validatedDate);
     const isFocused = useIsFocused();
     const [shouldNavigateOnFocus, setShouldNavigateOnFocus] = useState(false);
+    // validatedDate can land while a modal covers this page. goBack must run at most once, after that modal is gone.
+    const hasGoneBackAfterValidationRef = useRef(false);
 
     useEffect(() => {
-        if (prevValidatedDate || !loginData?.validatedDate) {
+        if (prevValidatedDate || !loginData?.validatedDate || hasGoneBackAfterValidationRef.current) {
             return;
         }
 
-        if (isFocused) {
-            // Navigate to methods page on successful validateCode verification.
-            // The validatedDate property indicates successful validateCode verification.
-            Navigation.goBack(listPath);
-        } else {
-            // Set flag to navigate when screen regains focus
-            setShouldNavigateOnFocus(true);
+        // listPath lags the focused route by a render and, while a modal is open, is that modal's URL.
+        // Go back only when the live route is this details page.
+        if (isFocused && goBackToContactMethodsList()) {
+            hasGoneBackAfterValidationRef.current = true;
+            return;
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- Omitting `isFocused` since we don't want this effect to on focus transitions
+
+        setShouldNavigateOnFocus(true);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- Omitting `isFocused` since we don't want this effect to run on focus transitions
     }, [prevValidatedDate, loginData?.validatedDate, isDefaultContactMethod, listPath]);
 
-    // Handle navigation when screen regains focus and flag is set
+    // listPath updates a render after focus. That is the retry when the live route was still the screen that just closed.
     useEffect(() => {
-        if (!isFocused || !shouldNavigateOnFocus) {
+        if (!isFocused || !shouldNavigateOnFocus || hasGoneBackAfterValidationRef.current) {
             return;
         }
+        if (!goBackToContactMethodsList()) {
+            return;
+        }
+        hasGoneBackAfterValidationRef.current = true;
         setShouldNavigateOnFocus(false);
-        Navigation.goBack(listPath);
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- Only fire on focus transitions
-    }, [isFocused]);
+    }, [isFocused, shouldNavigateOnFocus, listPath]);
 
     useEffect(() => {
         setIsValidateCodeFormVisible(!loginData?.validatedDate);
